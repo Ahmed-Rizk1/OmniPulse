@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy import DateTime, Float, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
+from pgvector.sqlalchemy import Vector
 
 from app.shared.database.base import Base
 
@@ -50,6 +51,10 @@ class Ticket(Base):
     )
     resolution: Mapped[str | None] = mapped_column(
         Text,
+        nullable=True,
+    )
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(768),
         nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(

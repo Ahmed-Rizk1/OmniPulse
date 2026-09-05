@@ -14,6 +14,15 @@ class Settings(BaseSettings):
     SUPABASE_DB_URL: str = Field(..., description="Supabase Postgres connection URL")
     REDIS_URL: str = Field(..., description="Redis connection URL")
     APP_ENV: str = Field(..., description="Application environment (development, production, etc.)")
+    GEMINI_API_KEY: str = Field(..., description="Google Gemini API key for text embeddings")
+    EMBEDDING_PROVIDER: str = Field(default="gemini", description="Embedding provider: gemini | mock")
+    EMBEDDING_DIMENSIONS: int = Field(default=768, description="Embedding vector dimensions")
+
+    @property
+    def clean_gemini_api_key(self) -> str:
+        """Returns the Gemini API key stripped of any surrounding whitespace or quotes."""
+        return self.GEMINI_API_KEY.strip().strip('"').strip("'")
+
 
     @property
     def async_supabase_db_url(self) -> str:

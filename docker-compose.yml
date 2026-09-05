@@ -21,6 +21,7 @@ services:
       - SUPABASE_DB_URL=${SUPABASE_DB_URL}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - APP_ENV=${APP_ENV:-development}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
       - ./backend/app:/app/app
       - ./alembic:/app/alembic
@@ -41,6 +42,7 @@ services:
       - SUPABASE_DB_URL=${SUPABASE_DB_URL}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - APP_ENV=${APP_ENV:-development}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
       - ./backend/app:/app/app
       - ./alembic:/app/alembic
