@@ -1,0 +1,42 @@
+services:
+  redis:
+    image: redis:7.4-alpine
+    container_name: omnipulse_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: omnipulse_backend
+    restart: unless-stopped
+    environment:
+      - SUPABASE_DB_URL=${SUPABASE_DB_URL}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - APP_ENV=${APP_ENV:-development}
+    volumes:
+      - ./backend/app:/app/app
+      - ./alembic:/app/alembic
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: omnipulse_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
