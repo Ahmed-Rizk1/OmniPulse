@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     TIER2_MODEL: str = Field(default="openai/gpt-oss-20b", description="Tier 2 LLM model for fallback resolution")
     RAG_TOP_K: int = Field(default=3, description="Top K knowledge context matches to retrieve")
     RAG_SIMILARITY_THRESHOLD: float = Field(default=0.6, description="Cosine similarity threshold for RAG retrieval")
+    SEMANTIC_CACHE_SIMILARITY_THRESHOLD: float = Field(default=0.95, description="Cosine similarity threshold for semantic cache hit")
+    SEMANTIC_CACHE_TTL_SECONDS: int = Field(default=86400, description="TTL in seconds for cached semantic resolutions")
 
     @property
     def clean_gemini_api_key(self) -> str:

@@ -42,12 +42,14 @@ async def publish_ticket_event(
     tenant_id: str | UUID,
     event_type: str = "ticket.received",
     stream: str = STREAM_TICKETS,
+    correlation_id: str | None = None,
 ) -> str:
     """Appends an event to the Redis stream."""
     payload: dict[str, Any] = {
         "event_type": event_type,
         "ticket_id": str(ticket_id),
         "tenant_id": str(tenant_id),
+        "correlation_id": correlation_id or "",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     msg_id = await redis_client.xadd(stream, payload)
@@ -57,5 +59,7 @@ async def publish_ticket_event(
         message_id=msg_id,
         ticket_id=str(ticket_id),
         tenant_id=str(tenant_id),
+        correlation_id=correlation_id or "",
     )
     return msg_id
+

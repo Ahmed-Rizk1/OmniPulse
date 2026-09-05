@@ -11,6 +11,9 @@ from app.config import settings
 from app.modules.tenants.router import router as tenants_router
 from app.modules.tickets.router import router as tickets_router
 from app.shared.database.session import engine
+from app.shared.telemetry.middleware import CorrelationIdMiddleware
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from fastapi import Response
 
 structlog.configure(
     processors=[
@@ -67,8 +70,20 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(CorrelationIdMiddleware)
+
 app.include_router(tenants_router, prefix="/tenants", tags=["tenants"])
 app.include_router(tickets_router, prefix="/webhooks", tags=["tickets"])
+
+
+@app.get("/metrics", tags=["observability"], summary="Prometheus scrape endpoint")
+def metrics_endpoint() -> Response:
+    """Returns raw Prometheus metrics exposition text."""
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
+    )
+
 
 
 @app.get("/health", status_code=status.HTTP_200_OK)

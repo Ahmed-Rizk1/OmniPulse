@@ -3,6 +3,7 @@ import os
 import signal
 import socket
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 import redis
@@ -22,8 +23,14 @@ from app.shared.ai.rag import (
     build_tier2_rag_prompt,
     retrieve_similar_context,
 )
+from app.shared.cache.semantic_cache import lookup_cache, store_cache
 from app.shared.database.rls import set_tenant_context
 from app.shared.database.session import AsyncSessionLocal, engine
+from app.shared.telemetry.metrics import (
+    semantic_cache_events_total,
+    worker_processing_duration_seconds,
+    worker_tickets_processed_total,
+)
 from app.shared.queue.redis_stream import (
     GROUP_TICKETS,
     STREAM_DLQ,
@@ -60,6 +67,15 @@ class TicketWorker:
     ) -> bool:
         ticket_id_str = fields.get("ticket_id")
         tenant_id_str = fields.get("tenant_id")
+        correlation_id = fields.get("correlation_id") or str(uuid.uuid4())
+
+        structlog.contextvars.bind_contextvars(
+            correlation_id=correlation_id,
+            tenant_id=tenant_id_str or "",
+        )
+
+        start_time = time.perf_counter()
+
         if not ticket_id_str or not tenant_id_str:
             logger.error("malformed_stream_message", msg_id=msg_id, fields=fields)
             return True
@@ -88,7 +104,47 @@ class TicketWorker:
         except Exception as emb_exc:
             logger.error("ticket_embedding_failed", ticket_id=ticket_id_str, error=str(emb_exc))
 
-        # 2. Execute Fast Triage Tier 1 via Groq
+        # 2. Check Semantic Cache (Redis Cosine >= 0.95)
+        if ticket.embedding:
+            try:
+                cached_hit = await lookup_cache(
+                    redis_client=self.redis_client,
+                    tenant_id=tenant_id,
+                    embedding=ticket.embedding,
+                    threshold=settings.SEMANTIC_CACHE_SIMILARITY_THRESHOLD,
+                )
+                if cached_hit:
+                    duration_s = time.perf_counter() - start_time
+                    semantic_cache_events_total.labels(tenant_id=tenant_id_str, result="hit").inc()
+                    worker_tickets_processed_total.labels(tenant_id=tenant_id_str, status="resolved_cached").inc()
+                    worker_processing_duration_seconds.labels(stage="total").observe(duration_s)
+
+                    ticket.status = "resolved_cached"
+                    ticket.resolution = cached_hit["resolution_text"]
+                    ticket.resolution_metadata = {
+                        "cached_from_ticket_id": cached_hit["ticket_id"],
+                        "similarity": cached_hit["similarity"],
+                        "source": "semantic_cache",
+                    }
+                    ticket.updated_at = datetime.now(timezone.utc)
+                    await session.commit()
+                    logger.info(
+                        "ticket_resolved_from_cache",
+                        ticket_id=ticket_id_str,
+                        tenant_id=tenant_id_str,
+                        cached_ticket_id=cached_hit["ticket_id"],
+                        similarity=cached_hit["similarity"],
+                        msg_id=msg_id,
+                        correlation_id=correlation_id,
+                        duration_ms=round(duration_s * 1000, 2),
+                    )
+                    return True
+                else:
+                    semantic_cache_events_total.labels(tenant_id=tenant_id_str, result="miss").inc()
+            except Exception as cache_exc:
+                logger.warn("semantic_cache_lookup_failed", ticket_id=ticket_id_str, error=str(cache_exc))
+
+        # 3. Execute Fast Triage Tier 1 via Groq
         try:
             llm_provider = get_groq_provider()
             user_prompt = triage_user_prompt(ticket.subject, ticket.body)
@@ -183,6 +239,29 @@ class TicketWorker:
                 ticket.resolution = f"Resolution failed due to internal error: {rag_exc}"
                 ticket.resolution_metadata = {"error": str(rag_exc), "status": "escalated_human"}
 
+        # If resolved by Tier 1 and resolution is missing, populate with summary
+        if ticket.status == "resolved_tier1" and not ticket.resolution:
+            ticket.resolution = ticket.summary or "Resolved via Tier 1 automated triage."
+
+        # 5. Store resolved tickets in Semantic Cache for fast retrieval
+        if ticket.embedding and ticket.resolution and ticket.status in ("resolved_tier1", "resolved_tier2"):
+            try:
+                await store_cache(
+                    redis_client=self.redis_client,
+                    tenant_id=tenant_id,
+                    ticket_id=ticket.id,
+                    embedding=ticket.embedding,
+                    resolution_text=ticket.resolution,
+                    metadata=ticket.resolution_metadata or ticket.triage_metadata,
+                    ttl=settings.SEMANTIC_CACHE_TTL_SECONDS,
+                )
+            except Exception as cache_store_exc:
+                logger.warn("semantic_cache_store_failed", ticket_id=ticket_id_str, error=str(cache_store_exc))
+
+        duration_s = time.perf_counter() - start_time
+        worker_tickets_processed_total.labels(tenant_id=tenant_id_str, status=ticket.status).inc()
+        worker_processing_duration_seconds.labels(stage="total").observe(duration_s)
+
         ticket.updated_at = datetime.now(timezone.utc)
         await session.commit()
 
@@ -192,6 +271,8 @@ class TicketWorker:
             tenant_id=tenant_id_str,
             final_status=ticket.status,
             msg_id=msg_id,
+            correlation_id=correlation_id,
+            duration_ms=round(duration_s * 1000, 2),
         )
         return True
 
