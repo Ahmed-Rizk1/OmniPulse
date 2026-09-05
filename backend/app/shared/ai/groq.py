@@ -159,16 +159,25 @@ class MockLLMProvider(ILLMProvider):
         user_prompt: str,
         response_schema: type[T],
     ) -> T:
-        dummy_data = {
-            "category": "billing",
-            "priority": "high",
-            "summary": "Mock triage summary",
-            "suggested_action": "Mock verification action",
-            "confidence": 0.95,
-            "reasoning": "Mock deterministic reasoning",
-            "needs_fallback": False,
-        }
+        if hasattr(response_schema, "model_fields") and "resolution_text" in response_schema.model_fields:
+            dummy_data = {
+                "resolution_text": "Based on our tenant policy, customers are eligible for a return within 30 days.",
+                "confidence": 0.92,
+                "cited_sources": ["mock_seed_ref"],
+                "status": "resolved_tier2",
+            }
+        else:
+            dummy_data = {
+                "category": "billing",
+                "priority": "high",
+                "summary": "Mock triage summary",
+                "suggested_action": "Mock verification action",
+                "confidence": 0.95,
+                "reasoning": "Mock deterministic reasoning",
+                "needs_fallback": False,
+            }
         return response_schema.model_validate(dummy_data)
+
 
 
 def get_groq_provider(

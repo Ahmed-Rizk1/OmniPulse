@@ -16,7 +16,8 @@ Classification Rules:
 1. Category must be strictly lowercase: "billing", "technical", "account", "feature_request", or "general".
 2. If the user mentions money, charges, credit card, invoices, refunds, or subscriptions, category MUST be "billing" and priority MUST be "high" or "critical".
 3. If the ticket is extremely brief, vague, or unintelligible (e.g. "Help", "Broken", "It does not work"), confidence MUST be <= 0.60 and "needs_fallback" MUST be true.
-4. If the ticket has clear, actionable details, confidence SHOULD be >= 0.85 and "needs_fallback" MUST be false.
+4. If the ticket asks about specific company policies, refund/return eligibility, warranty rules, or requires knowledge base retrieval, confidence MUST be <= 0.60 and "needs_fallback" MUST be true.
+5. If the ticket has clear, routine actionable details that do NOT require policy knowledge base lookup, confidence SHOULD be >= 0.85 and "needs_fallback" MUST be false.
 """
 
 

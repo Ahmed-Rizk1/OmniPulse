@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = Field(..., description="Groq API key for fast triage tier")
     GROQ_MODEL: str = Field(default="openai/gpt-oss-20b", description="Groq LLM model for fast triage")
     TRIAGE_CONFIDENCE_THRESHOLD: float = Field(default=0.85, description="Confidence threshold for Tier 1 triage")
+    TIER2_LLM_PROVIDER: str = Field(default="groq", description="Tier 2 LLM provider: groq | mock")
+    TIER2_MODEL: str = Field(default="openai/gpt-oss-20b", description="Tier 2 LLM model for fallback resolution")
+    RAG_TOP_K: int = Field(default=3, description="Top K knowledge context matches to retrieve")
+    RAG_SIMILARITY_THRESHOLD: float = Field(default=0.6, description="Cosine similarity threshold for RAG retrieval")
 
     @property
     def clean_gemini_api_key(self) -> str:

@@ -34,3 +34,16 @@ class TicketTriageResult(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
+
+class TicketResolutionResult(BaseModel):
+    resolution_text: str = Field(description="Natural language resolution response draft")
+    confidence: float = Field(default=0.85, ge=0.0, le=1.0, description="Confidence score (0.0 - 1.0)")
+    cited_sources: list[str] = Field(default_factory=list, description="List of source tickets or knowledge references cited")
+    status: Literal["resolved_tier2", "escalated_human"] = Field(
+        default="resolved_tier2",
+        description="Resulting resolution status",
+    )
+
+    model_config = ConfigDict(extra="ignore")
+
+

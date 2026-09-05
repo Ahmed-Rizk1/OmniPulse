@@ -14,9 +14,14 @@ from app.config import settings
 from app.modules.tenants.models import Tenant
 from app.modules.tickets.models import Ticket
 from app.modules.tickets.prompts import TRIAGE_SYSTEM_PROMPT, triage_user_prompt
-from app.modules.tickets.schemas import TicketTriageResult
+from app.modules.tickets.schemas import TicketResolutionResult, TicketTriageResult
 from app.shared.ai.embeddings import get_embedding_client
 from app.shared.ai.groq import get_groq_provider
+from app.shared.ai.rag import (
+    TIER2_RAG_SYSTEM_PROMPT,
+    build_tier2_rag_prompt,
+    retrieve_similar_context,
+)
 from app.shared.database.rls import set_tenant_context
 from app.shared.database.session import AsyncSessionLocal, engine
 from app.shared.queue.redis_stream import (
@@ -118,6 +123,65 @@ class TicketWorker:
             logger.error("ticket_triage_failed", ticket_id=ticket_id_str, error=str(triage_exc))
             ticket.status = "failed"
             ticket.triage_metadata = {"error": str(triage_exc)}
+
+        # 3. Tier 2 Resolution Engine: RAG Fallback
+        if ticket.status == "needs_fallback":
+            logger.info("tier2_rag_fallback_triggered", ticket_id=ticket_id_str, tenant_id=tenant_id_str)
+            try:
+                contexts: list[dict] = []
+                if ticket.embedding:
+                    contexts = await retrieve_similar_context(
+                        session=session,
+                        tenant_id=tenant_id,
+                        query_vector=ticket.embedding,
+                        limit=settings.RAG_TOP_K,
+                        threshold=settings.RAG_SIMILARITY_THRESHOLD,
+                    )
+
+                if contexts:
+                    logger.info(
+                        "tier2_rag_contexts_found",
+                        ticket_id=ticket_id_str,
+                        count=len(contexts),
+                    )
+                    rag_prompt = build_tier2_rag_prompt(ticket.subject, ticket.body, contexts)
+                    tier2_llm = get_groq_provider(model=settings.TIER2_MODEL)
+                    resolution_result: TicketResolutionResult = await tier2_llm.complete_json(
+                        system_prompt=TIER2_RAG_SYSTEM_PROMPT,
+                        user_prompt=rag_prompt,
+                        response_schema=TicketResolutionResult,
+                    )
+
+                    ticket.resolution = resolution_result.resolution_text
+                    ticket.resolution_metadata = resolution_result.model_dump()
+                    ticket.status = resolution_result.status
+
+                    logger.info(
+                        "tier2_rag_resolution_completed",
+                        ticket_id=ticket_id_str,
+                        status=ticket.status,
+                        confidence=resolution_result.confidence,
+                        cited_sources=resolution_result.cited_sources,
+                    )
+                else:
+                    logger.info(
+                        "tier2_rag_no_context_found",
+                        ticket_id=ticket_id_str,
+                        tenant_id=tenant_id_str,
+                    )
+                    ticket.status = "escalated_human"
+                    ticket.resolution = "No tenant knowledge base found matching this request. Escalated to human support."
+                    ticket.resolution_metadata = {
+                        "reason": "no_matching_context_found",
+                        "status": "escalated_human",
+                        "confidence": 0.0,
+                        "cited_sources": [],
+                    }
+            except Exception as rag_exc:
+                logger.error("tier2_rag_resolution_failed", ticket_id=ticket_id_str, error=str(rag_exc))
+                ticket.status = "escalated_human"
+                ticket.resolution = f"Resolution failed due to internal error: {rag_exc}"
+                ticket.resolution_metadata = {"error": str(rag_exc), "status": "escalated_human"}
 
         ticket.updated_at = datetime.now(timezone.utc)
         await session.commit()

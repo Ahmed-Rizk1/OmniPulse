@@ -63,6 +63,10 @@ class Ticket(Base):
         Text,
         nullable=True,
     )
+    resolution_metadata: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
     triage_metadata: Mapped[dict | None] = mapped_column(
         JSON,
         nullable=True,
