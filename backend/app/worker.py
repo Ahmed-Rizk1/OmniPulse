@@ -13,6 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.modules.tenants.models import Tenant
 from app.modules.tickets.models import Ticket
+from app.modules.tickets.prompts import TRIAGE_SYSTEM_PROMPT, triage_user_prompt
+from app.modules.tickets.schemas import TicketTriageResult
+from app.shared.ai.embeddings import get_embedding_client
+from app.shared.ai.groq import get_groq_provider
 from app.shared.database.rls import set_tenant_context
 from app.shared.database.session import AsyncSessionLocal, engine
 from app.shared.queue.redis_stream import (
@@ -69,8 +73,52 @@ class TicketWorker:
             logger.warn("ticket_not_found_for_event", ticket_id=ticket_id_str, tenant_id=tenant_id_str)
             return True
 
-        # Transition ticket status from 'pending' to 'processing'
-        ticket.status = "processing"
+        # 1. Generate text embedding via Gemini client
+        try:
+            embedding_client = get_embedding_client()
+            content_to_embed = f"{ticket.subject}\n{ticket.body}"
+            embedding = await embedding_client.embed_text(content_to_embed)
+            ticket.embedding = embedding
+            logger.info("ticket_embedded", ticket_id=ticket_id_str, dimensions=len(embedding))
+        except Exception as emb_exc:
+            logger.error("ticket_embedding_failed", ticket_id=ticket_id_str, error=str(emb_exc))
+
+        # 2. Execute Fast Triage Tier 1 via Groq
+        try:
+            llm_provider = get_groq_provider()
+            user_prompt = triage_user_prompt(ticket.subject, ticket.body)
+            triage_result: TicketTriageResult = await llm_provider.complete_json(
+                system_prompt=TRIAGE_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                response_schema=TicketTriageResult,
+            )
+
+            ticket.category = triage_result.category.lower()
+            ticket.priority = triage_result.priority.lower()
+            ticket.summary = triage_result.summary
+            ticket.confidence = triage_result.confidence
+            ticket.triage_metadata = triage_result.model_dump()
+
+            if triage_result.confidence >= settings.TRIAGE_CONFIDENCE_THRESHOLD and not triage_result.needs_fallback:
+                ticket.status = "resolved_tier1"
+            else:
+                ticket.status = "needs_fallback"
+
+            logger.info(
+                "ticket_triaged",
+                ticket_id=ticket_id_str,
+                tenant_id=tenant_id_str,
+                category=ticket.category,
+                priority=ticket.priority,
+                confidence=ticket.confidence,
+                status=ticket.status,
+            )
+
+        except Exception as triage_exc:
+            logger.error("ticket_triage_failed", ticket_id=ticket_id_str, error=str(triage_exc))
+            ticket.status = "failed"
+            ticket.triage_metadata = {"error": str(triage_exc)}
+
         ticket.updated_at = datetime.now(timezone.utc)
         await session.commit()
 
@@ -78,7 +126,7 @@ class TicketWorker:
             "ticket_processed",
             ticket_id=ticket_id_str,
             tenant_id=tenant_id_str,
-            new_status="processing",
+            final_status=ticket.status,
             msg_id=msg_id,
         )
         return True

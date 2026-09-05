@@ -17,11 +17,19 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = Field(..., description="Google Gemini API key for text embeddings")
     EMBEDDING_PROVIDER: str = Field(default="gemini", description="Embedding provider: gemini | mock")
     EMBEDDING_DIMENSIONS: int = Field(default=768, description="Embedding vector dimensions")
+    GROQ_API_KEY: str = Field(..., description="Groq API key for fast triage tier")
+    GROQ_MODEL: str = Field(default="openai/gpt-oss-20b", description="Groq LLM model for fast triage")
+    TRIAGE_CONFIDENCE_THRESHOLD: float = Field(default=0.85, description="Confidence threshold for Tier 1 triage")
 
     @property
     def clean_gemini_api_key(self) -> str:
         """Returns the Gemini API key stripped of any surrounding whitespace or quotes."""
         return self.GEMINI_API_KEY.strip().strip('"').strip("'")
+
+    @property
+    def clean_groq_api_key(self) -> str:
+        """Returns the Groq API key stripped of any surrounding whitespace or quotes."""
+        return self.GROQ_API_KEY.strip().strip('"').strip("'")
 
 
     @property

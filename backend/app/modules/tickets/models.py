@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
 import uuid
-from sqlalchemy import DateTime, Float, ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Index, JSON, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
+
 
 from app.shared.database.base import Base
 
@@ -45,12 +46,25 @@ class Ticket(Base):
         String(100),
         nullable=True,
     )
+    priority: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+        index=True,
+    )
     confidence: Mapped[float | None] = mapped_column(
         Float,
         nullable=True,
     )
+    summary: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
     resolution: Mapped[str | None] = mapped_column(
         Text,
+        nullable=True,
+    )
+    triage_metadata: Mapped[dict | None] = mapped_column(
+        JSON,
         nullable=True,
     )
     embedding: Mapped[list[float] | None] = mapped_column(
