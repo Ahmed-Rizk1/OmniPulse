@@ -24,3 +24,22 @@ class TenantRegisterResponse(BaseModel):
     tenant: TenantOut
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ApiKeyCreate(BaseModel):
+    label: str = Field(default="API Key", max_length=100)
+
+
+class ApiKeyItemOut(BaseModel):
+    key_id: str
+    prefix: str
+    label: str = "Primary Key"
+    created_at: datetime
+    last_used_at: datetime | None = None
+
+
+class ApiKeyCreateResponse(BaseModel):
+    key_id: str
+    api_key: str
+    prefix: str
+    label: str

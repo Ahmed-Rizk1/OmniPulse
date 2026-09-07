@@ -47,3 +47,37 @@ class TicketResolutionResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+class TicketDetailOut(BaseModel):
+    ticket_id: uuid.UUID
+    tenant_id: uuid.UUID
+    subject: str
+    body: str
+    source: str
+    status: str
+    category: str | None = None
+    priority: str | None = None
+    confidence: float | None = None
+    summary: str | None = None
+    resolution: str | None = None
+    triage_result: TicketTriageResult | None = None
+    resolution_result: TicketResolutionResult | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TicketCountsOut(BaseModel):
+    all: int = 0
+    new: int = 0
+    open: int = 0
+    pending: int = 0
+    resolved: int = 0
+    escalated: int = 0
+
+
+class TicketStatusUpdate(BaseModel):
+    status: str
+
+
+

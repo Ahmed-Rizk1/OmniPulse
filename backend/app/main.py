@@ -9,7 +9,7 @@ import structlog
 
 from app.config import settings
 from app.modules.tenants.router import router as tenants_router
-from app.modules.tickets.router import router as tickets_router
+from app.modules.tickets.router import api_router as tickets_api_router, router as tickets_router
 from app.shared.database.session import engine
 from app.shared.telemetry.middleware import CorrelationIdMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -74,6 +74,7 @@ app.add_middleware(CorrelationIdMiddleware)
 
 app.include_router(tenants_router, prefix="/tenants", tags=["tenants"])
 app.include_router(tickets_router, prefix="/webhooks", tags=["tickets"])
+app.include_router(tickets_api_router, prefix="/tickets", tags=["tickets"])
 
 
 @app.get("/metrics", tags=["observability"], summary="Prometheus scrape endpoint")

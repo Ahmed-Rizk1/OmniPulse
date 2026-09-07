@@ -50,19 +50,19 @@ export function RegisterForm() {
     setErrorMessage(null);
 
     try {
-      // Send both `name` and `company_name` to satisfy FastAPI TenantCreate schema
-      // while forwarding admin_email and password for complete tenant onboarding
-      const payload = {
+      const response = await registerTenant({
         name: values.company_name.trim(),
         company_name: values.company_name.trim(),
-        admin_email: values.admin_email.trim(),
-        password: values.password,
-      };
+      });
 
-      const response = await registerTenant(payload);
-
-      // Pre-save tenant and email in sessionStorage for a seamless login bridge
+      // Pre-save tenant credentials in sessionStorage for a seamless login bridge.
+      // omnipulse_tenant_id holds the UUID used in X-Tenant-Id headers.
+      // omnipulse_tenant_name holds the human-readable display name only.
       if (typeof window !== "undefined") {
+        const tenantUuid = response.id ?? response.tenant_id ?? response.tenant?.id;
+        if (tenantUuid) {
+          sessionStorage.setItem("omnipulse_tenant_id", tenantUuid);
+        }
         sessionStorage.setItem("omnipulse_tenant_name", values.company_name.trim());
         sessionStorage.setItem("omnipulse_user_email", values.admin_email.trim());
         sessionStorage.setItem("omnipulse_api_key", response.api_key);

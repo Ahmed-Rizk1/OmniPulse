@@ -33,6 +33,7 @@ const TenantContext = createContext<TenantContextType>({
 
 export function TenantProvider({ children }: { children: React.ReactNode }) {
   const [tenantName, setTenantName] = useState<string | null>(null);
+  const [tenantId, setTenantId] = useState<string | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
@@ -46,10 +47,12 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
           const supabase = createClient();
           const { data } = await supabase.auth.getSession();
           if (data?.session && isMounted) {
+            const meta = data.session.user?.user_metadata;
             const email = data.session.user?.email;
-            const metaName = data.session.user?.user_metadata?.company_name;
-            if (metaName) {
-              setTenantName(metaName);
+            // tenant_id in user_metadata is the UUID set during registration
+            if (meta?.tenant_id) setTenantId(meta.tenant_id);
+            if (meta?.company_name) {
+              setTenantName(meta.company_name);
             } else if (email) {
               setTenantName(email.split("@")[0]);
             }
@@ -58,14 +61,17 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
           // Supabase daemon unreachable or mock key — ignore and proceed to sessionStorage
         }
 
-        // 2. Read sessionStorage for direct tenant / API-key access
+        // 2. Read sessionStorage for direct tenant / API-key access.
+        // omnipulse_tenant_id is the UUID; omnipulse_tenant_name is display-only.
         if (typeof window !== "undefined") {
+          const storedId   = sessionStorage.getItem("omnipulse_tenant_id");
           const storedName = sessionStorage.getItem("omnipulse_tenant_name");
-          const storedKey = sessionStorage.getItem("omnipulse_api_key");
+          const storedKey  = sessionStorage.getItem("omnipulse_api_key");
 
           if (isMounted) {
+            if (storedId)   setTenantId(storedId);
             if (storedName) setTenantName(storedName);
-            if (storedKey) setToken(storedKey);
+            if (storedKey)  setToken(storedKey);
           }
         }
       } catch {
@@ -86,6 +92,7 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = () => {
     try {
+      sessionStorage.removeItem("omnipulse_tenant_id");
       sessionStorage.removeItem("omnipulse_tenant_name");
       sessionStorage.removeItem("omnipulse_api_key");
       sessionStorage.removeItem("omnipulse_user_email");
@@ -94,11 +101,10 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
       // ignore
     }
     setTenantName(null);
+    setTenantId(null);
     setToken(null);
     window.location.href = "/login";
   };
-
-  const tenantId = tenantName;
 
   return (
     <TenantContext.Provider
