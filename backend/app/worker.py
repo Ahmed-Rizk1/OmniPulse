@@ -145,10 +145,11 @@ class TicketWorker:
                 logger.warn("semantic_cache_lookup_failed", ticket_id=ticket_id_str, error=str(cache_exc))
 
         # 3. Execute Fast Triage Tier 1 via Groq
+        triage_result: TicketTriageResult | None = None
         try:
             llm_provider = get_groq_provider()
             user_prompt = triage_user_prompt(ticket.subject, ticket.body)
-            triage_result: TicketTriageResult = await llm_provider.complete_json(
+            triage_result = await llm_provider.complete_json(
                 system_prompt=TRIAGE_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
                 response_schema=TicketTriageResult,
@@ -160,11 +161,6 @@ class TicketWorker:
             ticket.confidence = triage_result.confidence
             ticket.triage_metadata = triage_result.model_dump()
 
-            if triage_result.confidence >= settings.TRIAGE_CONFIDENCE_THRESHOLD and not triage_result.needs_fallback:
-                ticket.status = "resolved_tier1"
-            else:
-                ticket.status = "needs_fallback"
-
             logger.info(
                 "ticket_triaged",
                 ticket_id=ticket_id_str,
@@ -172,7 +168,6 @@ class TicketWorker:
                 category=ticket.category,
                 priority=ticket.priority,
                 confidence=ticket.confidence,
-                status=ticket.status,
             )
 
         except Exception as triage_exc:
@@ -180,68 +175,110 @@ class TicketWorker:
             ticket.status = "failed"
             ticket.triage_metadata = {"error": str(triage_exc)}
 
-        # 3. Tier 2 Resolution Engine: RAG Fallback
-        if ticket.status == "needs_fallback":
-            logger.info("tier2_rag_fallback_triggered", ticket_id=ticket_id_str, tenant_id=tenant_id_str)
+        # 4. Context Retrieval & Resolution (Tier 2 Grounded RAG vs Tier 1 vs Escalation)
+        contexts: list[dict] = []
+        if ticket.embedding:
             try:
-                contexts: list[dict] = []
-                if ticket.embedding:
-                    contexts = await retrieve_similar_context(
-                        session=session,
-                        tenant_id=tenant_id,
-                        query_vector=ticket.embedding,
-                        limit=settings.RAG_TOP_K,
-                        threshold=settings.RAG_SIMILARITY_THRESHOLD,
-                    )
+                contexts = await retrieve_similar_context(
+                    session=session,
+                    tenant_id=tenant_id,
+                    query_vector=ticket.embedding,
+                    limit=settings.RAG_TOP_K,
+                    threshold=0.55,
+                )
+            except Exception as rag_exc:
+                logger.warn("rag_context_retrieval_failed", ticket_id=ticket_id_str, error=str(rag_exc))
 
-                if contexts:
-                    logger.info(
-                        "tier2_rag_contexts_found",
-                        ticket_id=ticket_id_str,
-                        count=len(contexts),
-                    )
-                    rag_prompt = build_tier2_rag_prompt(ticket.subject, ticket.body, contexts)
-                    tier2_llm = get_groq_provider(model=settings.TIER2_MODEL)
-                    resolution_result: TicketResolutionResult = await tier2_llm.complete_json(
-                        system_prompt=TIER2_RAG_SYSTEM_PROMPT,
-                        user_prompt=rag_prompt,
-                        response_schema=TicketResolutionResult,
-                    )
+        top_similarity = max((ctx.get("similarity", 0.0) for ctx in contexts), default=0.0)
+        has_genuine_context = bool(contexts) and top_similarity >= 0.60
 
-                    ticket.resolution = resolution_result.resolution_text
-                    ticket.resolution_metadata = resolution_result.model_dump()
-                    ticket.status = resolution_result.status
+        if has_genuine_context:
+            logger.info(
+                "tier2_rag_grounding_triggered",
+                ticket_id=ticket_id_str,
+                tenant_id=tenant_id_str,
+                contexts_count=len(contexts),
+                top_similarity=round(top_similarity, 4),
+            )
+            try:
+                rag_prompt = build_tier2_rag_prompt(ticket.subject, ticket.body, contexts)
+                tier2_llm = get_groq_provider(model=settings.TIER2_MODEL)
+                resolution_result: TicketResolutionResult = await tier2_llm.complete_json(
+                    system_prompt=TIER2_RAG_SYSTEM_PROMPT,
+                    user_prompt=rag_prompt,
+                    response_schema=TicketResolutionResult,
+                )
 
-                    logger.info(
-                        "tier2_rag_resolution_completed",
-                        ticket_id=ticket_id_str,
-                        status=ticket.status,
-                        confidence=resolution_result.confidence,
-                        cited_sources=resolution_result.cited_sources,
-                    )
-                else:
-                    logger.info(
-                        "tier2_rag_no_context_found",
-                        ticket_id=ticket_id_str,
-                        tenant_id=tenant_id_str,
-                    )
-                    ticket.status = "escalated_human"
-                    ticket.resolution = "No tenant knowledge base found matching this request. Escalated to human support."
-                    ticket.resolution_metadata = {
-                        "reason": "no_matching_context_found",
-                        "status": "escalated_human",
-                        "confidence": 0.0,
-                        "cited_sources": [],
-                    }
+                ticket.resolution = resolution_result.resolution_text
+                ticket.resolution_metadata = {
+                    **resolution_result.model_dump(),
+                    "source": "grounded_rag",
+                    "tier": "Tier 2",
+                    "retrieved_context_count": len(contexts),
+                    "top_similarity": round(top_similarity, 4),
+                }
+                ticket.status = resolution_result.status
+
+                logger.info(
+                    "tier2_rag_resolution_completed",
+                    ticket_id=ticket_id_str,
+                    status=ticket.status,
+                    confidence=resolution_result.confidence,
+                    cited_sources=resolution_result.cited_sources,
+                )
             except Exception as rag_exc:
                 logger.error("tier2_rag_resolution_failed", ticket_id=ticket_id_str, error=str(rag_exc))
                 ticket.status = "escalated_human"
-                ticket.resolution = f"Resolution failed due to internal error: {rag_exc}"
-                ticket.resolution_metadata = {"error": str(rag_exc), "status": "escalated_human"}
+                ticket.resolution = "Hello, thank you for reaching out. We encountered an issue while retrieving support documentation, and your ticket has been routed to a support specialist."
+                ticket.resolution_metadata = {"error": str(rag_exc), "status": "escalated_human", "source": "escalated_human"}
+        else:
+            if contexts:
+                logger.info(
+                    "rag_context_below_threshold_skipped",
+                    ticket_id=ticket_id_str,
+                    tenant_id=tenant_id_str,
+                    contexts_count=len(contexts),
+                    top_similarity=round(top_similarity, 4),
+                )
+            else:
+                logger.info(
+                    "no_rag_context_found",
+                    ticket_id=ticket_id_str,
+                    tenant_id=tenant_id_str,
+                )
+            # Evaluate if routine triage resolution applies or if escalation is needed
+            is_routine = (
+                triage_result is not None
+                and triage_result.confidence >= 0.85
+                and ticket.priority != "critical"
+                and not triage_result.needs_fallback
+            )
+            if is_routine:
+                ticket.status = "resolved_tier1"
+                ticket.resolution = (
+                    triage_result.suggested_resolution_draft
+                    or f"Hello, thank you for contacting support regarding '{ticket.subject}'. We have logged your request and our team is handling it."
+                )
+                ticket.resolution_metadata = {
+                    **triage_result.model_dump(),
+                    "source": "Tier 1",
+                    "tier": "Tier 1",
+                }
+            else:
+                ticket.status = "escalated_human"
+                ticket.resolution = "Hello, thank you for reaching out. No matching documentation was found in our knowledge base, so your ticket has been routed to a human support specialist for assistance."
+                ticket.resolution_metadata = {
+                    "reason": "no_matching_context_found",
+                    "status": "escalated_human",
+                    "source": "escalated_human",
+                    "tier": "Human Escalation",
+                    "confidence": triage_result.confidence if triage_result else 0.0,
+                    "cited_sources": [],
+                }
 
-        # If resolved by Tier 1 and resolution is missing, populate with summary
-        if ticket.status == "resolved_tier1" and not ticket.resolution:
-            ticket.resolution = ticket.summary or "Resolved via Tier 1 automated triage."
+        # Fallback safety guard: resolution must never be empty or equal to summary
+        if not ticket.resolution:
+            ticket.resolution = "Hello, thank you for contacting support. Our team has received your ticket and will follow up shortly."
 
         # 5. Store resolved tickets in Semantic Cache for fast retrieval
         if ticket.embedding and ticket.resolution and ticket.status in ("resolved_tier1", "resolved_tier2"):

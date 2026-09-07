@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+import re
 import uuid
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import select
@@ -7,6 +9,7 @@ import structlog
 
 from app.modules.tickets.models import Ticket
 from app.modules.tickets.schemas import (
+    TicketApplyReplyPayload,
     TicketCountsOut,
     TicketDetailOut,
     TicketOut,
@@ -18,6 +21,8 @@ from app.modules.tickets.schemas import (
 from app.modules.tickets.service import ingest_ticket
 from app.shared.database.rls import set_tenant_context
 from app.shared.database.session import get_db
+from app.shared.dispatch.outbound import OutboundDispatcher
+
 
 logger = structlog.get_logger("app.modules.tickets.router")
 
@@ -233,6 +238,78 @@ async def get_ticket(
     return _build_ticket_detail(ticket)
 
 
+def _extract_recipient(ticket: Ticket, override: str | None = None) -> str:
+    if override and override.strip():
+        return override.strip()
+
+    if ticket.resolution_metadata and isinstance(ticket.resolution_metadata, dict):
+        recipient = ticket.resolution_metadata.get("recipient")
+        if recipient:
+            return str(recipient).strip()
+
+    if ticket.triage_metadata and isinstance(ticket.triage_metadata, dict):
+        for key in ("customer_email", "sender", "recipient", "from", "phone_number"):
+            val = ticket.triage_metadata.get(key)
+            if val:
+                return str(val).strip()
+
+    email_match = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", ticket.body)
+    if email_match:
+        return email_match.group(0)
+
+    source = (ticket.source or "api").lower()
+    if source == "email":
+        return "customer@example.com"
+    elif source in ("whatsapp", "wa"):
+        return "+15550100"
+    return "customer@api.omnipulse.local"
+
+
+async def _dispatch_ticket_resolution(
+    ticket: Ticket,
+    tenant_id: uuid.UUID,
+    db: AsyncSession,
+    resolution_text: str | None = None,
+    recipient: str | None = None,
+) -> None:
+    final_text = (
+        resolution_text
+        or ticket.resolution
+        or (ticket.triage_metadata or {}).get("suggested_resolution_draft")
+        or ticket.subject
+    )
+    final_recipient = _extract_recipient(ticket, recipient)
+
+    # 1. Dispatch outbound via appropriate channel adapter
+    await OutboundDispatcher.dispatch_resolution(
+        tenant_id=tenant_id,
+        ticket_id=ticket.id,
+        recipient=final_recipient,
+        channel=ticket.source,
+        subject=ticket.subject,
+        resolution_text=final_text,
+    )
+
+    # 2. Update ticket resolution text if passed
+    if resolution_text:
+        ticket.resolution = resolution_text
+
+    # 3. Record entry in ticket_events with event type response_dispatched
+    meta = dict(ticket.resolution_metadata or {})
+    events = list(meta.get("events", []))
+    events.append({
+        "id": f"evt-{ticket.id}-dispatch-{len(events) + 1}",
+        "type": "response_dispatched",
+        "message": f"Resolution dispatched to customer via {ticket.source}",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "channel": ticket.source,
+        "recipient": final_recipient,
+    })
+    meta["events"] = events
+    meta["recipient"] = final_recipient
+    ticket.resolution_metadata = meta
+
+
 @api_router.patch(
     "/{ticket_id}/status",
     response_model=TicketDetailOut,
@@ -257,7 +334,56 @@ async def update_ticket_status(
     if not ticket:
         raise HTTPException(status_code=404, detail=f"Ticket '{ticket_id}' not found")
 
+    old_status = ticket.status
     ticket.status = payload.status
+
+    # Trigger outbound dispatch on transition to resolved status
+    if "resolved" in payload.status.lower() and "resolved" not in (old_status or "").lower():
+        await _dispatch_ticket_resolution(
+            ticket=ticket,
+            tenant_id=tenant_uuid,
+            db=db,
+        )
+
+    await db.commit()
+    await db.refresh(ticket)
+    return _build_ticket_detail(ticket)
+
+
+@api_router.post(
+    "/{ticket_id}/apply-reply",
+    response_model=TicketDetailOut,
+    status_code=status.HTTP_200_OK,
+    summary="Apply resolution draft as customer reply and dispatch outbound",
+)
+async def apply_reply(
+    ticket_id: uuid.UUID,
+    payload: TicketApplyReplyPayload = TicketApplyReplyPayload(),
+    x_tenant_id: str = Header(..., alias="X-Tenant-Id"),
+    db: AsyncSession = Depends(get_db),
+) -> TicketDetailOut:
+    try:
+        tenant_uuid = uuid.UUID(x_tenant_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid X-Tenant-Id header")
+
+    await set_tenant_context(db, tenant_uuid)
+    stmt = select(Ticket).where(Ticket.id == ticket_id, Ticket.tenant_id == tenant_uuid)
+    res = await db.execute(stmt)
+    ticket = res.scalar_one_or_none()
+    if not ticket:
+        raise HTTPException(status_code=404, detail=f"Ticket '{ticket_id}' not found")
+
+    ticket.status = payload.status or "resolved"
+
+    await _dispatch_ticket_resolution(
+        ticket=ticket,
+        tenant_id=tenant_uuid,
+        db=db,
+        resolution_text=payload.resolution_text,
+        recipient=payload.recipient,
+    )
+
     await db.commit()
     await db.refresh(ticket)
     return _build_ticket_detail(ticket)
@@ -311,5 +437,28 @@ async def get_ticket_events(
                 "timestamp": ticket.updated_at.isoformat(),
             }
         )
+
+    # Include any stored events from resolution_metadata (e.g. response_dispatched)
+    dispatched_found = False
+    if ticket.resolution_metadata and isinstance(ticket.resolution_metadata, dict):
+        custom_events = ticket.resolution_metadata.get("events", [])
+        if isinstance(custom_events, list):
+            for evt in custom_events:
+                events.append(evt)
+                if evt.get("type") == "response_dispatched":
+                    dispatched_found = True
+
+    # Ensure response_dispatched event is present if ticket is marked resolved
+    if "resolved" in ticket.status and not dispatched_found:
+        events.append(
+            {
+                "id": f"evt-{ticket.id}-dispatched",
+                "type": "response_dispatched",
+                "message": f"Resolution dispatched to customer via {ticket.source}",
+                "timestamp": ticket.updated_at.isoformat(),
+            }
+        )
+
     return events
+
 

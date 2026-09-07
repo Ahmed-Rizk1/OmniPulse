@@ -27,7 +27,11 @@ class TicketTriageResult(BaseModel):
     category: str = Field(description="Category: billing, technical, account, feature_request, general")
     priority: str = Field(description="Priority: low, medium, high, critical")
     summary: str = Field(description="Concise 1-sentence summary of the ticket", max_length=300)
-    suggested_action: str = Field(description="Recommended resolution or dispatch action")
+    suggested_resolution_draft: str = Field(
+        default="",
+        description="Direct, professional customer support reply addressed to the customer",
+    )
+    suggested_action: str = Field(default="", description="Recommended resolution or dispatch action")
     confidence: float = Field(default=0.9, ge=0.0, le=1.0, description="Confidence score (0.0 - 1.0)")
     reasoning: str | None = Field(default=None, description="Brief rationale for the triage result")
     needs_fallback: bool = Field(default=False, description="True if ticket requires Tier 2 RAG fallback")
@@ -78,6 +82,13 @@ class TicketCountsOut(BaseModel):
 
 class TicketStatusUpdate(BaseModel):
     status: str
+
+
+class TicketApplyReplyPayload(BaseModel):
+    resolution_text: str | None = Field(default=None, description="Updated resolution draft text to dispatch")
+    recipient: str | None = Field(default=None, description="Customer recipient email, phone, or handle")
+    status: str = Field(default="resolved", description="Target ticket status upon dispatch")
+
 
 
 

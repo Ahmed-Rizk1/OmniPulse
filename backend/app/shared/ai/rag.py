@@ -9,22 +9,23 @@ from app.shared.database.rls import set_tenant_context
 
 logger = structlog.get_logger("app.shared.ai.rag")
 
-TIER2_RAG_SYSTEM_PROMPT = """You are an enterprise Tier 2 support resolution assistant.
-Your task is to draft a comprehensive, accurate, and grounded resolution for a customer support ticket using ONLY the provided tenant knowledge context (previously resolved tickets and official policies).
+TIER2_RAG_SYSTEM_PROMPT = """You are an enterprise Tier 2 customer support resolution assistant.
+Your task is to draft a direct, professional, and empathetic support resolution reply addressed to the customer using ONLY the provided tenant knowledge base context.
 
 You MUST output ONLY a valid JSON object matching this exact schema:
 {
-  "resolution_text": "<Detailed, polite, and helpful resolution grounded in the retrieved context>",
+  "resolution_text": "<A direct, professional support reply addressed to the customer, e.g. 'Hello, thank you for reaching out...'>",
   "confidence": <float between 0.0 and 1.0>,
-  "cited_sources": ["<list of ticket IDs or source identifiers from the context>"],
+  "cited_sources": ["<list of document titles, chunk IDs, or ticket IDs cited from context>"],
   "status": "resolved_tier2" | "escalated_human"
 }
 
 Rules:
-1. Ground your answer strictly in the provided Context Solutions. Do NOT fabricate policies or facts not supported by the context.
-2. If the context contains a clear solution or policy matching the user's issue, provide a complete resolution, set confidence >= 0.85, and status="resolved_tier2". List the source ID(s) in "cited_sources".
-3. If the context does not contain sufficient or relevant information to resolve the issue, or if the confidence is below 0.70, set status="escalated_human" and explain that human escalation is needed.
-4. Always maintain a professional, empathetic enterprise support tone.
+1. Do NOT summarize the user's issue in 'resolution_text'. You must write the actual response addressed to the customer.
+2. Ground your resolution strictly on the provided '=== RETRIEVED KNOWLEDGE BASE CONTEXT ==='. Do NOT fabricate candidate details, facts, or policies not supported by the context.
+3. If the context contains relevant information to answer or resolve the customer's request, provide a comprehensive, polite response, set confidence >= 0.85, status="resolved_tier2", and list the cited source(s) in "cited_sources".
+4. If the context does not contain sufficient or relevant information, or if confidence is below 0.70, set status="escalated_human", confidence <= 0.60, and politely explain in resolution_text that their request is being routed to a human specialist.
+5. Always maintain a professional, empathetic enterprise support tone.
 """
 
 
@@ -37,12 +38,12 @@ def build_tier2_rag_prompt(subject: str, body: str, contexts: list[dict[str, Any
         for idx, ctx in enumerate(contexts, 1):
             if ctx.get("is_document"):
                 snippets.append(
-                    f"--- Knowledge Base Policy/Document #{idx} [{ctx.get('title', 'Policy')}] (Cosine Similarity: {ctx.get('similarity', 0.0):.3f}) ---\n"
-                    f"Document Content: {ctx.get('content', '')}"
+                    f"--- Source Document #{idx} [{ctx.get('title', 'Knowledge Base Document')}] (Cosine Similarity: {ctx.get('similarity', 0.0):.3f}) ---\n"
+                    f"{ctx.get('content', '').strip()}"
                 )
             else:
                 snippets.append(
-                    f"--- Context Solution #{idx} [Ticket ID: {ctx.get('ticket_id', 'N/A')}] (Cosine Similarity: {ctx.get('similarity', 0.0):.3f}) ---\n"
+                    f"--- Previously Resolved Ticket #{idx} [Ticket ID: {ctx.get('ticket_id', 'N/A')}] (Cosine Similarity: {ctx.get('similarity', 0.0):.3f}) ---\n"
                     f"Subject: {ctx.get('subject', '')}\n"
                     f"Problem Details: {ctx.get('body', '')}\n"
                     f"Resolution Applied: {ctx.get('resolution', '')}"
@@ -50,11 +51,15 @@ def build_tier2_rag_prompt(subject: str, body: str, contexts: list[dict[str, Any
         context_str = "\n\n".join(snippets)
 
     return (
-        f"Customer Ticket Issue:\n"
+        f"Customer Support Ticket:\n"
         f"Subject: {subject.strip()}\n"
-        f"Body: {body.strip()}\n\n"
-        f"Retrieved Tenant Knowledge Context:\n{context_str}\n\n"
-        f"Draft a grounded, professional resolution for the customer ticket using the retrieved context."
+        f"Body:\n{body.strip()}\n\n"
+        f"=== RETRIEVED KNOWLEDGE BASE CONTEXT ===\n"
+        f"{context_str}\n"
+        f"========================================\n\n"
+        f"Instructions:\n"
+        f"Draft a direct, professional support reply addressed to the customer (e.g., 'Hello, thank you for reaching out...').\n"
+        f"Ground your reply strictly on the retrieved knowledge base context above. Do not summarize the ticket — write the actual resolution message to the customer."
     )
 
 
@@ -63,12 +68,13 @@ async def retrieve_similar_context(
     tenant_id: UUID,
     query_vector: list[float],
     limit: int = 3,
-    threshold: float = 0.6,
+    threshold: float = 0.55,
 ) -> list[dict[str, Any]]:
     """Performs cosine similarity search using pgvector (<=>) against resolved tickets and document chunks.
 
     Strictly enforces PostgreSQL session-level Row-Level Security (RLS) via set_tenant_context
-    so no cross-tenant knowledge data can ever be accessed or leaked.
+    and explicit tenant_id filters so no cross-tenant knowledge data can ever be accessed or leaked.
+    Allows relevant documents through with distance <= 0.45 (similarity >= 0.55).
     """
     if not query_vector:
         return []
@@ -77,6 +83,7 @@ async def retrieve_similar_context(
     await set_tenant_context(session, tenant_id)
 
     results: list[dict[str, Any]] = []
+    max_distance = 1.0 - threshold
 
     # 1. Query Knowledge Base Document Chunks
     try:
@@ -96,8 +103,9 @@ async def retrieve_similar_context(
             .join(SourceDocument, DocumentChunk.document_id == SourceDocument.id)
             .where(
                 DocumentChunk.tenant_id == tenant_id,
+                SourceDocument.tenant_id == tenant_id,
                 DocumentChunk.embedding.isnot(None),
-                (1.0 - chunk_dist) >= threshold,
+                chunk_dist <= max_distance,
             )
             .order_by(chunk_dist.asc())
             .limit(limit)
@@ -112,6 +120,8 @@ async def retrieve_similar_context(
                     "title": row.title,
                     "content": row.content,
                     "similarity": float(row.similarity) if row.similarity is not None else 0.0,
+                    "source": "grounded_rag",
+                    "tier": "Tier 2",
                 }
             )
     except Exception as exc:
@@ -136,7 +146,7 @@ async def retrieve_similar_context(
                 Ticket.status.in_(["resolved_tier1", "resolved_tier2"]),
                 Ticket.resolution.isnot(None),
                 Ticket.embedding.isnot(None),
-                (1.0 - distance_expr) >= threshold,
+                distance_expr <= max_distance,
             )
             .order_by(distance_expr.asc())
             .limit(limit)
@@ -153,6 +163,8 @@ async def retrieve_similar_context(
                     "body": row.body,
                     "resolution": row.resolution,
                     "similarity": float(row.similarity) if row.similarity is not None else 0.0,
+                    "source": "grounded_rag",
+                    "tier": "Tier 2",
                 }
             )
     except Exception as exc:
