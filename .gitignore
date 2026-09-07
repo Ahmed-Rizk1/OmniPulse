@@ -47,6 +47,17 @@ docs/**
 AGENTS.md
 PROGRESS.md
 
+# Logs & build outputs
+*.log
+frontend-build.log
+.next/
+node_modules/
+
+# Local media & uploads
+media/
+uploads/
+data/
+
 # Verification & scratch scripts
 backend/app/verify*.py
 backend/verify*.py
