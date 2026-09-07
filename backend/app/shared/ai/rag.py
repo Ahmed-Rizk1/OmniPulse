@@ -35,12 +35,18 @@ def build_tier2_rag_prompt(subject: str, body: str, contexts: list[dict[str, Any
     else:
         snippets = []
         for idx, ctx in enumerate(contexts, 1):
-            snippets.append(
-                f"--- Context Solution #{idx} [Ticket ID: {ctx.get('ticket_id', 'N/A')}] (Cosine Similarity: {ctx.get('similarity', 0.0):.3f}) ---\n"
-                f"Subject: {ctx.get('subject', '')}\n"
-                f"Problem Details: {ctx.get('body', '')}\n"
-                f"Resolution Applied: {ctx.get('resolution', '')}"
-            )
+            if ctx.get("is_document"):
+                snippets.append(
+                    f"--- Knowledge Base Policy/Document #{idx} [{ctx.get('title', 'Policy')}] (Cosine Similarity: {ctx.get('similarity', 0.0):.3f}) ---\n"
+                    f"Document Content: {ctx.get('content', '')}"
+                )
+            else:
+                snippets.append(
+                    f"--- Context Solution #{idx} [Ticket ID: {ctx.get('ticket_id', 'N/A')}] (Cosine Similarity: {ctx.get('similarity', 0.0):.3f}) ---\n"
+                    f"Subject: {ctx.get('subject', '')}\n"
+                    f"Problem Details: {ctx.get('body', '')}\n"
+                    f"Resolution Applied: {ctx.get('resolution', '')}"
+                )
         context_str = "\n\n".join(snippets)
 
     return (
@@ -59,7 +65,7 @@ async def retrieve_similar_context(
     limit: int = 3,
     threshold: float = 0.6,
 ) -> list[dict[str, Any]]:
-    """Performs cosine similarity search using pgvector (<=>) against resolved tickets.
+    """Performs cosine similarity search using pgvector (<=>) against resolved tickets and document chunks.
 
     Strictly enforces PostgreSQL session-level Row-Level Security (RLS) via set_tenant_context
     so no cross-tenant knowledge data can ever be accessed or leaked.
@@ -70,52 +76,97 @@ async def retrieve_similar_context(
     # Enforce RLS tenant context prior to execution
     await set_tenant_context(session, tenant_id)
 
-    # Cosine distance: Ticket.embedding <=> query_vector
-    # Cosine similarity = 1 - cosine_distance
-    distance_expr = Ticket.embedding.cosine_distance(query_vector)
-    similarity_expr = (1.0 - distance_expr).label("similarity")
-
-    stmt = (
-        select(
-            Ticket.id,
-            Ticket.tenant_id,
-            Ticket.subject,
-            Ticket.body,
-            Ticket.resolution,
-            similarity_expr,
-        )
-        .where(
-            Ticket.tenant_id == tenant_id,
-            Ticket.status.in_(["resolved_tier1", "resolved_tier2"]),
-            Ticket.resolution.isnot(None),
-            Ticket.embedding.isnot(None),
-            (1.0 - distance_expr) >= threshold,
-        )
-        .order_by(distance_expr.asc())
-        .limit(limit)
-    )
-
-    res = await session.execute(stmt)
-    rows = res.all()
-
     results: list[dict[str, Any]] = []
-    for row in rows:
-        results.append(
-            {
-                "ticket_id": str(row.id),
-                "tenant_id": str(row.tenant_id),
-                "subject": row.subject,
-                "body": row.body,
-                "resolution": row.resolution,
-                "similarity": float(row.similarity) if row.similarity is not None else 0.0,
-            }
+
+    # 1. Query Knowledge Base Document Chunks
+    try:
+        from app.modules.knowledge.models import DocumentChunk, SourceDocument
+
+        chunk_dist = DocumentChunk.embedding.cosine_distance(query_vector)
+        chunk_sim = (1.0 - chunk_dist).label("similarity")
+
+        chunk_stmt = (
+            select(
+                DocumentChunk.id,
+                DocumentChunk.document_id,
+                DocumentChunk.content,
+                SourceDocument.title,
+                chunk_sim,
+            )
+            .join(SourceDocument, DocumentChunk.document_id == SourceDocument.id)
+            .where(
+                DocumentChunk.tenant_id == tenant_id,
+                DocumentChunk.embedding.isnot(None),
+                (1.0 - chunk_dist) >= threshold,
+            )
+            .order_by(chunk_dist.asc())
+            .limit(limit)
         )
+        chunk_res = await session.execute(chunk_stmt)
+        for row in chunk_res.all():
+            results.append(
+                {
+                    "is_document": True,
+                    "chunk_id": str(row.id),
+                    "document_id": str(row.document_id),
+                    "title": row.title,
+                    "content": row.content,
+                    "similarity": float(row.similarity) if row.similarity is not None else 0.0,
+                }
+            )
+    except Exception as exc:
+        logger.warn("knowledge_chunks_retrieval_skip", error=str(exc))
+
+    # 2. Query Resolved Tickets
+    try:
+        distance_expr = Ticket.embedding.cosine_distance(query_vector)
+        similarity_expr = (1.0 - distance_expr).label("similarity")
+
+        ticket_stmt = (
+            select(
+                Ticket.id,
+                Ticket.tenant_id,
+                Ticket.subject,
+                Ticket.body,
+                Ticket.resolution,
+                similarity_expr,
+            )
+            .where(
+                Ticket.tenant_id == tenant_id,
+                Ticket.status.in_(["resolved_tier1", "resolved_tier2"]),
+                Ticket.resolution.isnot(None),
+                Ticket.embedding.isnot(None),
+                (1.0 - distance_expr) >= threshold,
+            )
+            .order_by(distance_expr.asc())
+            .limit(limit)
+        )
+
+        res = await session.execute(ticket_stmt)
+        for row in res.all():
+            results.append(
+                {
+                    "is_document": False,
+                    "ticket_id": str(row.id),
+                    "tenant_id": str(row.tenant_id),
+                    "subject": row.subject,
+                    "body": row.body,
+                    "resolution": row.resolution,
+                    "similarity": float(row.similarity) if row.similarity is not None else 0.0,
+                }
+            )
+    except Exception as exc:
+        logger.warn("ticket_context_retrieval_skip", error=str(exc))
+
+    # Sort combined results by similarity descending, take top `limit`
+    results.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
+    top_results = results[:limit]
 
     logger.info(
         "rag_context_retrieved",
         tenant_id=str(tenant_id),
-        matches_count=len(results),
+        matches_count=len(top_results),
         threshold=threshold,
         limit=limit,
     )
-    return results
+    return top_results

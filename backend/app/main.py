@@ -8,6 +8,8 @@ from sqlalchemy import text
 import structlog
 
 from app.config import settings
+from app.modules.channels.router import router as channels_router
+from app.modules.knowledge.router import router as knowledge_router
 from app.modules.tenants.router import router as tenants_router
 from app.modules.tickets.router import api_router as tickets_api_router, router as tickets_router
 from app.shared.database.session import engine
@@ -75,6 +77,8 @@ app.add_middleware(CorrelationIdMiddleware)
 app.include_router(tenants_router, prefix="/tenants", tags=["tenants"])
 app.include_router(tickets_router, prefix="/webhooks", tags=["tickets"])
 app.include_router(tickets_api_router, prefix="/tickets", tags=["tickets"])
+app.include_router(knowledge_router, prefix="/knowledge", tags=["knowledge"])
+app.include_router(channels_router, prefix="/channels", tags=["channels"])
 
 
 @app.get("/metrics", tags=["observability"], summary="Prometheus scrape endpoint")

@@ -13,6 +13,8 @@ from app.modules.tenants.schemas import (
     ApiKeyCreate,
     ApiKeyCreateResponse,
     ApiKeyItemOut,
+    TenantAuthRequest,
+    TenantAuthResponse,
     TenantCreate,
     TenantOut,
     TenantRegisterResponse,
@@ -23,6 +25,41 @@ from app.shared.database.session import get_db
 logger = structlog.get_logger("app.modules.tenants")
 
 router = APIRouter()
+
+
+@router.post(
+    "/auth",
+    response_model=TenantAuthResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Authenticate with tenant name and API key, returns tenant UUID",
+)
+async def auth_tenant(
+    payload: TenantAuthRequest,
+    db: AsyncSession = Depends(get_db),
+) -> TenantAuthResponse:
+    stmt = select(Tenant).where(Tenant.name == payload.tenant_name)
+    res = await db.execute(stmt)
+    tenant = res.scalar_one_or_none()
+
+    # Use constant-time comparison to prevent timing attacks.
+    # Always run bcrypt even on miss so response time doesn't leak tenant existence.
+    dummy_hash = "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj404a/mE94S"
+    stored_hash = tenant.api_key_hash if tenant else dummy_hash
+
+    key_valid = bcrypt.checkpw(
+        payload.api_key.encode("utf-8"),
+        stored_hash.encode("utf-8"),
+    )
+
+    if not tenant or not key_valid:
+        logger.warn("tenant_auth_failed", tenant_name=payload.tenant_name)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid tenant name or API key",
+        )
+
+    logger.info("tenant_auth_success", tenant_id=str(tenant.id), name=tenant.name)
+    return TenantAuthResponse(tenant_id=str(tenant.id), tenant_name=tenant.name)
 
 
 @router.post(

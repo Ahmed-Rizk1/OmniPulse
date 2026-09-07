@@ -145,6 +145,13 @@ export function LoginForm() {
             sessionStorage.getItem("omnipulse_tenant_name") ||
             values.email.split("@")[0];
           sessionStorage.setItem("omnipulse_tenant_name", tenantName);
+
+          const tenantUuid =
+            (data.session.user?.user_metadata?.tenant_id as string) ||
+            sessionStorage.getItem("omnipulse_tenant_id");
+          if (tenantUuid) {
+            sessionStorage.setItem("omnipulse_tenant_id", tenantUuid);
+          }
         }
 
         setSuccess(true);
@@ -174,22 +181,45 @@ export function LoginForm() {
     setIsFetchError(false);
 
     try {
-      if (typeof window !== "undefined") {
-        sessionStorage.setItem("omnipulse_tenant_name", values.tenant_name.trim());
-        sessionStorage.setItem("omnipulse_api_key", values.api_key.trim());
+      // Verify credentials with the backend and retrieve the real tenant UUID.
+      const res = await fetch("/api/tenants/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tenant_name: values.tenant_name.trim(),
+          api_key: values.api_key.trim(),
+        }),
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        setErrorMessage(
+          errJson?.detail ?? "Invalid tenant name or API key. Please try again."
+        );
+        return;
       }
+
+      const data: { tenant_id: string; tenant_name: string } = await res.json();
+
+      if (typeof window !== "undefined") {
+        sessionStorage.setItem("omnipulse_tenant_id",   data.tenant_id);
+        sessionStorage.setItem("omnipulse_tenant_name", data.tenant_name);
+        sessionStorage.setItem("omnipulse_api_key",     values.api_key.trim());
+      }
+
       setSuccess(true);
       setTimeout(() => {
         window.location.href = "/tickets";
       }, 600);
     } catch (err: unknown) {
       setErrorMessage(
-        err instanceof Error ? err.message : "Failed to store session credentials."
+        err instanceof Error ? err.message : "Failed to authenticate. Please try again."
       );
     } finally {
       setIsLoading(false);
     }
   };
+
 
   if (success) {
     return (

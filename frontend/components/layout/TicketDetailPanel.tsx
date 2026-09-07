@@ -37,7 +37,7 @@ interface TicketDetailPanelProps {
 export function TicketDetailPanel({ className = "" }: TicketDetailPanelProps) {
   const searchParams = useSearchParams();
   const ticketId = searchParams.get("ticket");
-  const { tenantId, session } = useTenant();
+  const { tenantId, token } = useTenant();
   const queryClient = useQueryClient();
 
   const [isEditingResolution, setIsEditingResolution] = useState(false);
@@ -52,7 +52,7 @@ export function TicketDetailPanel({ className = "" }: TicketDetailPanelProps) {
     error,
   } = useQuery<TicketDetail>({
     queryKey: ["ticket", ticketId],
-    queryFn: () => fetchTicketDetail(ticketId!, tenantId!, session?.access_token),
+    queryFn: () => fetchTicketDetail(ticketId!, tenantId!, token),
     enabled: Boolean(ticketId && tenantId),
     refetchInterval: 30_000,
   });
@@ -60,7 +60,7 @@ export function TicketDetailPanel({ className = "" }: TicketDetailPanelProps) {
   // 2. Optimistic status mutation for "Apply as Reply"
   const statusMutation = useMutation({
     mutationFn: (newStatus: TicketStatus) =>
-      updateTicketStatus(ticketId!, newStatus, tenantId!, session?.access_token),
+      updateTicketStatus(ticketId!, newStatus, tenantId!, token),
     onMutate: async (newStatus: TicketStatus) => {
       await queryClient.cancelQueries({ queryKey: ["ticket", ticketId] });
       const prev = queryClient.getQueryData<TicketDetail>(["ticket", ticketId]);

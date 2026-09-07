@@ -7,11 +7,11 @@ import { useTenant } from "@/components/shared/TenantProvider";
 import { Clock, Cpu, CheckCircle2, ArrowRight, Loader2 } from "lucide-react";
 
 export function ActivityTimeline({ ticketId }: { ticketId: string }) {
-  const { tenantId, session } = useTenant();
+  const { tenantId, token } = useTenant();
 
   const { data: events, isLoading } = useQuery<TicketEvent[]>({
     queryKey: ["ticket-events", ticketId],
-    queryFn: () => fetchTicketEvents(ticketId, tenantId!, session?.access_token),
+    queryFn: () => fetchTicketEvents(ticketId, tenantId!, token),
     enabled: Boolean(ticketId && tenantId),
     refetchInterval: 15_000,
   });

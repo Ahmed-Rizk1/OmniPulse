@@ -32,10 +32,32 @@ const TenantContext = createContext<TenantContextType>({
 });
 
 export function TenantProvider({ children }: { children: React.ReactNode }) {
-  const [tenantName, setTenantName] = useState<string | null>(null);
-  const [tenantId, setTenantId] = useState<string | null>(null);
-  const [token, setToken] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  // Synchronously initialize state from sessionStorage if available in browser context
+  const [tenantName, setTenantName] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      return sessionStorage.getItem("omnipulse_tenant_name");
+    }
+    return null;
+  });
+  const [tenantId, setTenantId] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      return sessionStorage.getItem("omnipulse_tenant_id");
+    }
+    return null;
+  });
+  const [token, setToken] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      return sessionStorage.getItem("omnipulse_api_key");
+    }
+    return null;
+  });
+  const [isLoading, setIsLoading] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      // If tenantId is already in sessionStorage, unblock initial render immediately
+      return !sessionStorage.getItem("omnipulse_tenant_id");
+    }
+    return true;
+  });
 
   useEffect(() => {
     let isMounted = true;
@@ -50,9 +72,17 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
             const meta = data.session.user?.user_metadata;
             const email = data.session.user?.email;
             // tenant_id in user_metadata is the UUID set during registration
-            if (meta?.tenant_id) setTenantId(meta.tenant_id);
+            if (meta?.tenant_id) {
+              setTenantId(meta.tenant_id);
+              if (typeof window !== "undefined") {
+                sessionStorage.setItem("omnipulse_tenant_id", meta.tenant_id);
+              }
+            }
             if (meta?.company_name) {
               setTenantName(meta.company_name);
+              if (typeof window !== "undefined") {
+                sessionStorage.setItem("omnipulse_tenant_name", meta.company_name);
+              }
             } else if (email) {
               setTenantName(email.split("@")[0]);
             }
@@ -63,16 +93,14 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
 
         // 2. Read sessionStorage for direct tenant / API-key access.
         // omnipulse_tenant_id is the UUID; omnipulse_tenant_name is display-only.
-        if (typeof window !== "undefined") {
+        if (typeof window !== "undefined" && isMounted) {
           const storedId   = sessionStorage.getItem("omnipulse_tenant_id");
           const storedName = sessionStorage.getItem("omnipulse_tenant_name");
           const storedKey  = sessionStorage.getItem("omnipulse_api_key");
 
-          if (isMounted) {
-            if (storedId)   setTenantId(storedId);
-            if (storedName) setTenantName(storedName);
-            if (storedKey)  setToken(storedKey);
-          }
+          if (storedId)   setTenantId(storedId);
+          if (storedName) setTenantName(storedName);
+          if (storedKey)  setToken(storedKey);
         }
       } catch {
         // sessionStorage not available (SSR pre-render context)

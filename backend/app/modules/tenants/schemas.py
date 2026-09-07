@@ -26,6 +26,16 @@ class TenantRegisterResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class TenantAuthRequest(BaseModel):
+    tenant_name: str = Field(..., min_length=1, max_length=255)
+    api_key: str = Field(..., min_length=1)
+
+
+class TenantAuthResponse(BaseModel):
+    tenant_id: str
+    tenant_name: str
+
+
 class ApiKeyCreate(BaseModel):
     label: str = Field(default="API Key", max_length=100)
 

@@ -21,7 +21,7 @@ import {
 export function TicketTable() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { tenantId, session } = useTenant();
+  const { tenantId, token } = useTenant();
 
   const selectedTicketId = searchParams.get("ticket");
   const activeView = searchParams.get("view");
@@ -55,7 +55,7 @@ export function TicketTable() {
       activePriority,
       activePage,
     ],
-    queryFn: () => fetchTickets(filters, tenantId!, session?.access_token),
+    queryFn: () => fetchTickets(filters, tenantId!, token),
     enabled: Boolean(tenantId),
     refetchInterval: 10_000,
   });
