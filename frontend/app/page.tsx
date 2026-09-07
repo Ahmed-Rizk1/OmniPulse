@@ -1,6 +1,7 @@
-﻿"use client";
+"use client";
 
 import React from "react";
+import Link from "next/link";
 import {
   Layers,
   Cpu,
@@ -34,27 +35,27 @@ export default function HomePage() {
           </div>
         </div>
 
-        <div className="flex items-center space-x-4 text-xs">
-          <div className="flex items-center gap-1.5 text-slate-400">
-            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span>Slice 10 Verified</span>
-          </div>
+        <div className="flex items-center space-x-3 text-xs">
           <a
             href="/health"
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-1 px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 transition"
+            className="hidden sm:flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition"
           >
-            Backend Health <ExternalLink className="h-3 w-3" />
+            Health <ExternalLink className="h-3 w-3" />
           </a>
-          <a
-            href="/metrics"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1 px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 transition"
+          <Link
+            href="/login"
+            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
           >
-            Metrics <ExternalLink className="h-3 w-3" />
-          </a>
+            Sign In
+          </Link>
+          <Link
+            href="/register"
+            className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium shadow-md shadow-blue-500/20 transition"
+          >
+            Register Company
+          </Link>
         </div>
       </header>
 
@@ -153,18 +154,23 @@ export default function HomePage() {
         </div>
 
         {/* Roadmap Banner */}
-        <div className="rounded-xl border border-blue-900/40 bg-blue-950/20 p-6 flex items-center justify-between">
+        <div className="rounded-xl border border-blue-900/40 bg-blue-950/20 p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div>
             <h3 className="text-sm font-semibold text-blue-200 mb-1">
-              Next Phase: Slice 11 (Tenant Auth & Onboarding)
+              Slice 11: Tenant Auth & Onboarding Active
             </h3>
             <p className="text-xs text-blue-300/70">
-              Proceeding to company registration, Supabase authentication, and API key management screens.
+              Company registration, Supabase session handling, and API key management screens are now online.
             </p>
           </div>
-          <div className="flex items-center text-xs font-medium text-blue-400 gap-1">
-            <span>Slices 11–13 Queued</span>
-            <ArrowRight className="h-4 w-4" />
+          <div className="flex items-center gap-3">
+            <Link
+              href="/register"
+              className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-medium text-white transition"
+            >
+              <span>Try Register</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
           </div>
         </div>
       </main>
