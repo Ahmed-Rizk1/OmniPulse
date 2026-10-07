@@ -4,6 +4,7 @@ OmniPulse is a multi-tenant, event-driven customer support operations platform d
 
 The system combines an asynchronous message-passing pipeline with pgvector similarity search, strict tenant isolation via PostgreSQL Row-Level Security (RLS), and a two-tier resolution engine that routes tickets through low-latency classification before falling back to grounded retrieval-augmented generation (RAG).
 
+ Here is a video demo : https://drive.google.com/file/d/1LyRav0uWNTmySbxwWpj1si9bxDfSms0v/view?usp=sharing
 ---
 
 ## Architecture
